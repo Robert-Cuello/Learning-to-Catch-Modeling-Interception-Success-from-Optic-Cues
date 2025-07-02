@@ -1,0 +1,176 @@
+
+
+```{r}
+### INITIALIZATION ###
+
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(utils)
+
+load('final_db.RData')
+db <- db
+```
+
+```{r}
+### HELPER FUNCTIONS ###
+
+
+eudist_3d = function(x1,x2,y1,y2,z1,z2){
+  return(sqrt((x1-x2)^2+(y1-y2)^2+(z1-z2)^2))
+}
+
+radius = function(size){
+  return(size / 2)
+}
+
+theta = function(radius, dBall){
+  return(2 * atan(radius / dBall))
+}
+#theta <- 2 * atan(radius / dBall)
+```
+
+
+```{r}
+### DATA EXTRACTION ###
+
+meta_data <- db %>%
+  filter(s != 's_5') %>% # filter out subject 5, faulty device
+  group_by(s, block, trial) %>% # group by each subject, block, and trial
+  summarise(
+    G = first(G), # select the gravity of the trial, constant per trial
+    size = first(size), # select the size of the ball for the trial, constant per trial
+    .groups = "drop" # remove the grouping, return a flat data frame --> avoids potential issues later
+  ) %>%
+  mutate(trial_id = paste0(s, "_b", block, "_t", trial)) %>% # create the trial id
+  relocate(trial_id) # relocate the trial_id column to be the 1st one
+```
+
+```{r}
+### THETA VECTOR PER TRIAL ###
+
+# Step 1: filter full data and compute dBall and theta
+theta_vectors <- db %>%
+  filter(s != 's_5', phase == 2) %>% # filter out subject 5, faulty device, and select only data form phase 2
+  mutate(
+    dBall = eudist_3d(ball_x, obs_x, ball_y, obs_y, ball_z, obs_z), # calculation of the distance ball-subject, by means of euclidian distance
+    radius = radius(size), # calculate the radius, using the size of the ball for the trial
+    theta = theta(radius, dBall) # calculate theta with the radius and the dBall
+  )
+
+# Step 2: collapse into one theta vector per trial
+theta_list <- theta_vectors %>% # using the previous way to calculate theta
+  group_by(s, block, trial) %>% # group by subject, block, trial
+  arrange(t) %>% # order the values of t, in ascending order by default
+  summarise(theta = list(theta), .groups = "drop") %>% # takes all theta values form the trial, and creates a list with them.
+  mutate(trial_id = paste0(s, "_b", block, "_t", trial)) %>% # creates a unique identifier per trial, key to join with other datasets
+  select(trial_id, theta) # selects only what we need, creating a table with identifier per trial, and vector of theta values.
+
+# Step 3: join theta vector into meta_data
+metatheta_data <- meta_data %>%
+  left_join(theta_list, by = "trial_id") # joins the initial table, with the one with theta values, by the trial_id identifiers
+```
+
+```{r}
+### PITCHBALL VECTOR PER TRIAL ###
+
+# Step 1: filter and extract pitchBall values from phase 2
+pitch_vectors <- db %>%
+  filter(s != 's_5', phase == 2) %>%  # filter out subject 5, faulty device, and select only data form phase 2
+  group_by(s, block, trial) %>% # group by subject, block, trial
+  arrange(t) %>% # order the values of t, in ascending order by default
+  summarise(pitchBall = list(pitchBall), .groups = "drop") %>% # takes all pitchBall values form the trial, and creates a list with them.
+  mutate(trial_id = paste0(s, "_b", block, "_t", trial)) %>% # creates a unique identifier per trial, key to join with other datasets
+  select(trial_id, pitchBall) # selects only what we need, creating a table with identifier per trial, and vector of pitchBall values.
+
+# Step 2: join pitchBall vector into metatheta_data
+metatheta_pitch_data <- metatheta_data %>%
+  left_join(pitch_vectors, by = "trial_id") # joins the initial table, with the one with pitchBall values, by the trial_id identifiers
+```
+
+
+```{r}
+### CATCH / NO CATCH classification ###
+
+#catch_success = 1  if dBall in phase 3 ≤ 0.5
+#catch_success = 0  otherwise
+
+# 1. Compute dBall during phase 3
+catch_info <- db %>%
+  filter(s != 's_5', phase == 3) %>% # filter out subject 5, faulty device, and select only data form phase 3
+  mutate(
+    dBall = eudist_3d(ball_x, obs_x, ball_y, obs_y, ball_z, obs_z) # calculate distance ball-observer with the final position of the trial of each
+      ) %>%
+  group_by(s, block, trial) %>%  # group by subject, block, trial
+  summarise(
+    min_dBall = min(dBall, na.rm = TRUE), # from each dBall, take the smallest (when the ball is closest to the observer across the trial)
+    .groups = "drop"
+  ) %>%
+  mutate(
+    catch_success = as.integer(min_dBall <= 0.5), # creates a binary label, 1 if catch (dball < 0.5), else  0, no catch
+    trial_id = paste0(s, "_b", block, "_t", trial) # creates a unique identifier per trial, key to join with other datasets
+  ) %>%
+  select(trial_id, catch_success) # selects only what we need, creating a table with identifier per trial, and vector of binary values
+
+# Step 2: join catch_info into metatheta_data
+final_data <- metatheta_pitch_data %>%
+  left_join(catch_info, by = "trial_id") # joins the initial table, with the one with binary values, by the trial_id identifiers
+```
+
+```{r}
+### PADDING THETA AND PITCHBALL VECTORS FOR EQUAL LENGTH ###
+
+# 1. Find the max length of the theta and pitchBall vectors
+max_len_theta <- max(lengths(final_data$theta), na.rm = TRUE)  # max length of all theta vectors
+max_len_pitch <- max(lengths(final_data$pitchBall), na.rm = TRUE)  # max length of all pitchBall vectors
+
+# 2. Pad helper function
+pad_to <- function(vec, target_len) {  # takes a vector and target length
+  vec <- as.numeric(vec)               # ensures it's numeric
+  length(vec) <- target_len            # pads with NA up to target length
+  vec[is.na(vec)] <- 0                 # replaces NAs with 0
+  return(vec)
+}
+
+# 3. Apply padding to list-columns
+padded_data <- final_data %>%
+  mutate(
+    theta_pad = map(theta, ~ pad_to(.x, max_len_theta)),         # pad each theta vector
+    pitch_pad = map(pitchBall, ~ pad_to(.x, max_len_pitch))      # pad each pitchBall vector
+  )
+
+# 4. Convert padded vectors to wide-format numeric columns
+theta_matrix <- do.call(rbind, padded_data$theta_pad)  # convert list of vectors to matrix
+colnames(theta_matrix) <- paste0("theta_", seq_len(ncol(theta_matrix)))  # name columns
+
+pitch_matrix <- do.call(rbind, padded_data$pitch_pad)  # convert list of vectors to matrix
+colnames(pitch_matrix) <- paste0("pitchBall_", seq_len(ncol(pitch_matrix)))  # name columns
+
+# 5. Rebuild final_data with flat/padded vectors
+final_data <- padded_data %>%
+  select(-theta, -pitchBall, -theta_pad, -pitch_pad) %>%  # drop list-columns
+  bind_cols(as.data.frame(theta_matrix),                  # bind wide-format theta
+            as.data.frame(pitch_matrix))                  # bind wide-format pitchBall
+```
+
+```{r}
+### ELIMINATING NAs ###
+
+final_data_clean <- final_data %>%
+  filter(!is.na(catch_success))
+```
+
+```{r}
+### ELIMINATE IDENTIFICATION INFO ###
+
+ml_data <- final_data_clean %>%
+  select(-trial_id, -s, -block, -trial)
+```
+
+```{r}
+### EXPORT DATA INTO A CSV FILE ###
+
+write.csv(ml_data, "CML_data.csv", row.names = FALSE)
+```
+
+

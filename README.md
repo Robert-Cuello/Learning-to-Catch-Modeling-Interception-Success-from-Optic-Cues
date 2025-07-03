@@ -18,11 +18,12 @@ The project analyzes human behavior during interception of virtual balls under v
 
 ## Repository Structure
 
-├── Data Extraction.Rmd # R script to generate CML_data.csv from RData
-├── interception_utils.py # Python utility functions
-├── Modularized ML classification model.ipynb # Main Jupyter notebook (ML pipeline)
-├── CML_data.csv # Generated dataset for ML (not included in repo)
-└── README.md # This document
+- Data Extraction.Rmd # R script to generate CML_data.csv from RData
+- interception_utils.py # Python utility functions
+- Modularized ML classification model.ipynb # Main Jupyter notebook (ML pipeline)
+- CML_data.csv # Generated dataset for ML (not included in repo)
+- Learning to Catch - Modeling Interception Success from Optic Cues.pdf # MSc thesis, final
+- README.md # This document
 
 ---
 
